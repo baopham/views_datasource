@@ -1,0 +1,6 @@
+name = Views BibTeX
+description = "Views style plugin to render node content as BibTeX."
+package = Views
+core = 6.x
+dependencies[] = views
+php = 5.1

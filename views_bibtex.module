@@ -1,0 +1,291 @@
+<?php
+
+/**
+ * @file
+ * Module definition for views_bibtex
+ *
+ * @see views_bibtex.views.inc
+ */
+
+
+function views_bibtex_views_api() {
+  return array(
+    'api' => '2.0',
+    'path' => drupal_get_path('module', 'views_bibtex'),
+  );
+}
+
+/**
+ * We almost duplicate the content_handler_field_multiple::render function
+ * to get the multiple rendered field values in an array
+ * @param $field
+ * @param $values
+ * @return unknown_type
+ */
+function _views_bibtex_render_multiple_field($field, $values) {
+  $options = $field->options;
+  // If this is not a grouped field, use content_handler_field::render().
+  if (!$field->defer_query) {
+    return $field->render($values);
+  }
+  // We're down to a single node here, so we can retrieve the actual field
+  // definition for the node type being considered.
+  $content_field = content_fields($field->content_field['field_name'], $values->{$field->aliases['type']});
+  $vid = $values->{$field->field_alias};
+  if (isset($field->field_values[$vid])) {
+    // Gather items, respecting the 'Display n values starting from m' settings.
+    $count_skipped = 0;
+    $items = array();
+    foreach ($field->field_values[$vid] as $item) {
+      if (empty($options['multiple']['multiple_from']) || ($count_skipped >= $options['multiple']['multiple_from'])) {
+        if (empty($options['multiple']['multiple_number']) || (count($items) < $options['multiple']['multiple_number'])) {
+          // Grab the nid - needed for render_link().
+          $nid = $item['_nid'];
+          unset($item['_nid']);
+          $items[] = $item;
+        }
+        else {
+          break;
+        }
+      }
+      $count_skipped++;
+    }
+
+    // Build a pseudo-node from the retrieved values.
+    $node = drupal_clone($values);
+    // content_format and formatters will need a 'type'.
+    $node->type = $values->{$field->aliases['type']};
+    $node->nid = $values->{$field->aliases['nid']};
+    $node->vid = $values->{$field->aliases['vid']};
+
+    // Some formatters need to behave differently depending on the build_mode
+    // (for instance: preview), so we provide one.
+    $node->build_mode = NODE_BUILD_NORMAL;
+
+    // Render items.
+    $formatter_name = $options['format'];
+    if ($items && ($formatter = _content_get_formatter($formatter_name, $content_field['type']))) {
+      $rendered = array();
+      if (content_handle('formatter', 'multiple values', $formatter) == CONTENT_HANDLE_CORE) {
+        // Single-value formatter.
+        $n = 0;
+        foreach ($items as $item) {
+          $output = content_format($content_field, $item, $formatter_name, $node);
+          if (!empty($output)) {
+            $rendered[++$n] = $field->render_link($output, (object) array('nid' => $nid));
+          }
+        }
+      }
+      else {
+        // Multiple values formatter.
+        $output = content_format($content_field, $items, $formatter_name, $values);
+        if (!empty($output)) {
+          $rendered[++$n] = $field->render_link($output, (object) array('nid' => $nid));
+        }
+      }
+      if (count($rendered) > 1) {
+        // TODO: could we use generic field display ?
+        //return theme('content_view_multiple_field', $rendered, $content_field, $values);
+        return $rendered;
+      }
+      elseif ($rendered) {
+        return $rendered[1];
+      }
+    }
+  }
+
+  return '';
+}
+
+/**
+ * Takes each field from a row object and renders the field as determined by the field's theme
+ *
+ * @param $view
+ * 	 View the row belongs to
+ * @param $row
+ *   Row object
+ * @return array
+ *   Object containing all the raw and rendered fields
+ */
+function _views_bibtex_render_fields($view, $row) {
+  $field_ids = array_keys($view->field);
+  $rendered_fields = array();
+  foreach ($field_ids as $id) {
+    $field = $view->field[$id];
+    $field_is_multiple = FALSE;
+    $field_raw = array();
+    if ((isset($field->options['multiple']['group']))&& isset($field->field_values)) {
+      $field_output = _views_bibtex_render_multiple_field($field, $row);
+      $n = 0;
+      if (is_array($field_output)) {
+        foreach ($field->field_values[$row->{$field->field_alias}] as $item) {
+          $field_raw[++$n] = $item["value"];
+        }
+        $field_is_multiple = TRUE;
+      }
+      else $field_raw = $view->field[$field->options['id']]->theme($row);
+    }
+    else {
+      $field_output = $view->field[$field->options['id']]->theme($row);
+      $field_raw = (isset($view->field[$id]->field_alias) && isset($row->{$view->field[$id]->field_alias})) ? $row->{$view->field[$id]->field_alias} : NULL;
+    }
+
+    $img_match = array();
+    $src_match = array();
+    if (is_array($field_output)) {
+      foreach ($field_output as $i => $f) {
+        if (preg_match("/<img[^>]+>/i", $f, $img_match)) {
+          if (preg_match('/(src)="([^"]*)"/i', $img_match[0], $src_match))
+            $field_output[$i] = ($src_match[2]);
+        }
+      }
+    }
+    else {
+      if (preg_match("/<img[^>]+>/i", $field_output, $img_match)) {
+        if (preg_match('/(src)="([^"]*)"/i', $img_match[0], $src_match))
+          $field_output = ($src_match[2]);
+      }
+    }
+
+    if (empty($field->options['exclude']) && ($field_output != "") && !empty($field_output)) {
+      $object = new stdClass();
+      $object->id = $id;
+      $object->content = $field_output;
+      $object->raw = $field_raw;
+      $object->class = views_css_safe($id);
+      $object->label = check_plain($view->field[$id]->label());
+      $object->is_multiple = $field_is_multiple;
+      $rendered_fields[$id] = $object;
+    }
+  }
+  return $rendered_fields;
+}
+
+/**
+ * Strips illegal characters for an identifier from a BibTeX string.
+ *
+ * @param $input
+ *   Identifier string to process.
+ * @return
+ *   Identifier string with illegal characters stripped away.
+ */
+function _views_bibtex_check_label($input) {
+  $output = str_replace(array('{', '}', '[', ']', ':', ',', '"', "'", chr(47), chr(92)), '', $input);
+  $output = preg_replace(
+    '/[\x{80}-\x{A0}'.      // Non-printable ISO-8859-1 + NBSP
+    '\x{01}-\x{1F}'.        // Non-printable ASCII characters
+    '\x{0}]/u',             // NULL byte
+    '', $output);
+
+  return check_plain(strip_tags($output));
+}
+
+/**
+ * Format BibTeX
+ *
+ * @param $v
+ * @param $options
+ *   Array of options
+ * @param $html
+ *   Boolean, TRUE to format BibTeX in HTML, FALSE to format BibTeX as plain text
+ *
+ * @return
+ *   The formatted BibTeX data
+ */
+function _views_bibtex_formatted($v, $options, $html) {
+  $entry_type_label = $options['entry_type_label'];
+  $display_entry_type_field = $options['display_entry_type_field'];
+  $generate_key = $options['generate_key'];
+
+  if ($html) {
+    $base_indent  = '&nbsp;&nbsp;';
+    $eol          = '<br />';
+    $eos          = $eol; // End of section
+  }
+  else {
+    $base_indent  = '  ';
+    $eol          = "\n";
+    $eos          = $eol . $eol;
+  }
+
+  // This is based on the drupal_to_js() function.
+  switch (gettype($v)) {
+  case 'boolean':
+    // Lowercase is necessary!
+    return $v ? 'true' : 'false';
+
+  case 'integer':
+  case 'double':
+    return $v;
+
+  case 'resource':
+  case 'string':
+    $search   = array('"', chr(92), chr(8), chr(12), chr(13) . chr(10), chr(10), chr(13), chr(9));
+    $replace  = array('\"', '\\', '\b', '\f', '\n', '\n', '\r', '\t');
+    $output   = str_replace($search, $replace, $v);
+    return check_plain($output);
+
+  case 'array':
+    if (empty($v) || array_keys($v) === range(0, sizeof($v) - 1)) {
+      $output = array();
+      foreach ($v as $val) {
+        $output[] = _views_bibtex_formatted($val, $options, $html, $id);
+        $id += 1;
+      }
+      return (!empty($output) ? implode($eos, $output) : '');
+    }
+
+  case 'object':
+    $output = '';
+    $close = '';
+    foreach ($v as $key => $val) {
+      if (!$display_entry_type_field) {
+        if ($key == $entry_type_label)
+          continue;
+      }
+
+      // Entry field closing
+      if ($key != 'nodes') $close = "},$eol";
+
+      // Author field
+      if ($key == 'author' && is_array($val)) $val = implode(' and ', $val);
+
+      // Entry
+      if ($key == 'node') {
+        // Citation key
+        // @todo: make sure the name is last name.
+        // Right now we just take the first word of the author string
+        if ($generate_key) {
+          $first_author = (is_array($val['author'])) ? reset($val['author']) : $val['author'];
+          $strs = explode(' ', $first_author);
+          $last_name = trim($strs[0], ',');
+          $cite_key = $last_name . $val['year'] . ',';
+        }
+        else $cite_key = '';
+
+        $entry_type = $val[$entry_type_label];
+        $key = "@$entry_type{" . $cite_key . $eol;
+        $close = "}$eol";
+      }
+
+      // Field opening
+      elseif ($key != 'nodes') $key = $base_indent . _views_bibtex_formatted(strval($key), $options, $html) . ' = {';
+
+      // If the $key is 'nodes', or 'node', ignore
+      else $key = '';
+
+      $output .= $key . _views_bibtex_formatted($val, $options, $html) . $close;
+    }
+    return $output;
+
+  default:
+    return '';
+  }
+}
+
+function _views_bibtex_debug_stop($var, $location) {
+  print("Location:$location\n");
+  var_dump($var);
+  module_Invoke_all('exit');
+  exit;
+}
