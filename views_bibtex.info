@@ -1,0 +1,7 @@
+name = Views BibTeX
+description = Views style plugin to render node content as BibTeX.
+package = Views
+core = 7.x
+dependencies[] = views
+
+files[] = views/plugins/views_plugin_style_bibtex.inc
